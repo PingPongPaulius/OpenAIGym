@@ -5,8 +5,10 @@ import numpy as np
 import torch
 from torch import nn
 import torchvision.transforms as T
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import random as rng
+import copy
 from collections import deque
 
 transform = T.Compose([
@@ -15,29 +17,24 @@ transform = T.Compose([
     T.ToTensor()
     ])
 
-NUM_EPISODES = 1
-FRAME_QUEUE_SIZE = 4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class NeuralNet(nn.Module):
 
     def __init__(self, num_actions):
-        super().__init__()
-        self.model = nn.Sequential(
-                nn.Conv2d(in_channels=4, out_channels=16, kernel_size=8, stride=4),
-                nn.ReLU(),
-                nn.Conv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2),
-                nn.ReLU(),
-                nn.Conv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2),
-                nn.ReLU(),
-                nn.Flatten(),
-                nn.Linear(16, 256),
-                nn.ReLU(),
-                nn.Linear(256, num_actions)
-                )
+        super(NeuralNet, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=4, out_channels=16, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2)
+        self.fc = nn.Linear(3872, 256)
+        self.output = nn.Linear(256, num_actions)
     
     def forward(self, x):
-        return self.model(x)
+        x = self.conv1(x)
+        x = F.relu(x)
+        x = F.relu(self.conv2(x))
+        x = torch.flatten(x)
+        x = F.relu(self.fc(x))
+        return self.output(x)
 
 def to_gray_to_binary(rgb):
     return (np.dot(rgb[:,:,:3], [0.2989, 0.5870, 0.1140])>128).astype(np.uint8)
@@ -49,69 +46,99 @@ def process_image(rgb):
 
 
 gym.register_envs(ale_py)
-env = gym.make("ALE/Pong-v5", render_mode="human")
+#env = gym.make("ALE/Pong-v5", render_mode="human")
+env = gym.make("ALE/Pong-v5")
 
-D = deque(maxlen=100000)
+C_max = 10
+C = C_max
+D = deque(maxlen=10000000)
 Q = NeuralNet(env.action_space.n).to(DEVICE)
-Epsilon = 0.4
-Gamma = 0.4
-SAMPLE_SIZE = 10
+Q_star = copy.deepcopy(Q)
+NUM_EPISODES = 100
+FRAME_QUEUE_SIZE = 4
+Epsilon = 1.0
+Gamma = 0.99
+SAMPLE_SIZE = 32
+
+performance = []
+ADAM = torch.optim.Adam(Q_star.parameters(), lr=1e-4)
+
+pixels, info = env.reset()
+image, tensor = process_image(pixels)
+frame_queue = []
+state = None
 
 for episode in range(NUM_EPISODES):
     
-    pixels, info = env.reset()
     running = True
-    reward = 0
-
-    image, tensor = process_image(pixels)
-    frame_queue = [tensor, tensor, tensor, tensor]
-    frames = torch.stack(frame_queue, dim=0).to(DEVICE)
-
+    pixels, info = env.reset()
+    score = 0
     while running:
 
-        state = frames
-        if (rng.random() < Epsilon):
+        if (rng.random() <= max(Epsilon, 0.01)):
             action = env.action_space.sample()
         else:
             output = Q.forward(frames)
-            output = torch.argmax(output, dim=1)
-            counts = torch.bincount(output)
-            action = torch.argmax(counts)
+            action = torch.argmax(output)
 
         pixels, reward, terminated, truncated, info = env.step(action) 
-
         image, tensor = process_image(pixels)
-
-        frame_queue = frame_queue[1:]
         frame_queue.append(tensor)
-        frames = torch.stack(frame_queue, dim=0).to(DEVICE)
-        D.append((state, action, reward, frames))
+        score+=reward
+
+        if(len(frame_queue) < FRAME_QUEUE_SIZE):
+            continue
+        else:
+            frames = torch.stack(frame_queue, dim=0).to(DEVICE)
+            frame_queue = []
+
+        if state is not None:
+            D.append((state, action, reward, frames))
+        state = frames
+
 
         if len(D) >= SAMPLE_SIZE:
             subsamples = rng.sample(D, SAMPLE_SIZE)
+            targets = torch.zeros(SAMPLE_SIZE).to(DEVICE)
+            real_values = torch.zeros(SAMPLE_SIZE).to(DEVICE)
 
-            for sample in subsamples:
+            for i, sample in enumerate(subsamples):
 
                 s = sample[0]
                 s_next = sample[3]
                 r = torch.tensor(sample[2], dtype=torch.float32).to(DEVICE)
-                a = torch.tensor(sample[1], dtype=torch.int64).to(DEVICE)
                 terminal = (r != 0).int()
 
-                target_q = Q.forward(s_next).max(1)[0]
-                y = r + target_q * Gamma * (1-terminal)
+                next_q = Q_star.forward(s_next)
+                # Target is best Q value
+                desired_q = next_q.max()
+                if r == 0:
+                    target_q = r + desired_q * Gamma
+                else:
+                    target_q = r
 
-                Q_state = Q.forward(s)
-                a_index = torch.full((32,),a).to(DEVICE)
-                Q_real = Q_state[:, action]
-                loss = nn.functional.mse_loss(Q_real, y)
+                action_taken = sample[1]
+                Q_action = Q_star.forward(s)[action_taken]
 
-                loss.backward()
+                real_values[i] = Q_action
+                targets[i] = target_q
 
+            loss = F.mse_loss(targets, real_values)
+
+            ADAM.zero_grad()
+            loss.backward()
+            ADAM.step()
+        
+        Epsilon -= 0.00000001
         running = not (terminated or truncated)
 
+    Q = copy.deepcopy(Q_star)
 
-plt.imshow(image)
+    performance.append(score)
+    print("Episode Fisnished", episode, " Reward", score)
+
+
+plt.plot([i for i in range(len(performance))], performance)
 plt.show()
 
 env.close()
