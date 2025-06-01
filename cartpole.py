@@ -3,85 +3,89 @@ import ale_py
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
-import random as rng
+import random as random
 import copy
 from collections import deque
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.optimizers import Adam
 
-def DQN():
-    
-    model = tf.keras.Sequential()
-    model.add(tf.keras.layers.Dense(8, input_shape=(4,), activation='relu'))
-    model.add(tf.keras.layers.Dense(16, activation='relu'))
-    model.add(tf.keras.layers.Dense(2, activation='linear'))
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001), loss='mse')
+ENV_NAME = "CartPole-v1"
 
-    return model
+GAMMA = 0.95
+LEARNING_RATE = 0.001
 
-def state_to_tensor(states):
-    return tf.convert_to_tensor(states, dtype=tf.float32)
+MEMORY_SIZE = 1000000
+BATCH_SIZE = 20
 
-def get_action(state, DQN, Epsilon):
-    if rng.random() < max(Epsilon, 0.01):
-        return env.action_space.sample()
-    else:
-        state = tf.reshape(state, (1,4))
-        output = DQN.predict(state, verbose=0)
-        return np.argmax(output)
-
-##gym.register_envs(ale_py)
-#env = gym.make("CartPole-v1", render_mode="human")
-env = gym.make("CartPole-v1")
-
-D = deque(maxlen=10000000)
-Q = DQN()
-NUM_EPISODES = 1000
-FRAME_QUEUE_SIZE = 4
-Epsilon = 1.0
-Gamma = tf.constant(0.95, dtype=tf.float32)
-SAMPLE_SIZE = 20
-LR = 0.0001
-
-performance = []
-
-state, info = env.reset()
-
-for episode in range(NUM_EPISODES):
-    
-    running = True
-    state, info = env.reset()
-    score = 0
-    while running:
-        
-        curr_states = state_to_tensor(state)
-        action = get_action(curr_states, Q, Epsilon)
-        state, reward, terminated, truncated, info = env.step(action) 
-        if terminated or truncated:
-            running = False
-        D.append((curr_states, action, reward, state_to_tensor(state), running))
-        score += 1
-    
-        if(len(D) >= SAMPLE_SIZE):
-            minibatch = rng.sample(list(D), SAMPLE_SIZE)
-
-            for s, a, r, next_state, cont in minibatch:
-                
-                
-                s = tf.reshape(s, (1,4))
-                next_state = tf.reshape(next_state, (1,4))
-                y = reward + Gamma * np.max(Q.predict(next_state, verbose=0)) if cont else r
-                q = Q.predict(s, verbose=0)
-                q[0][a] = y
-                Q.fit(s, q, epochs=1, verbose=0)
-
-        Epsilon *= 0.995
+EXPLORATION_MAX = 1.0
+EXPLORATION_MIN = 0.01
+EXPLORATION_DECAY = 0.995
 
 
-    performance.append(score)
-    print("Episode Fisnished", episode, " Reward", score)
+class DQNSolver:
+
+    def __init__(self, observation_space, action_space):
+        self.exploration_rate = EXPLORATION_MAX
+
+        self.action_space = action_space
+        self.memory = deque(maxlen=MEMORY_SIZE)
+
+        self.model = Sequential()
+        self.model.add(Dense(24, input_shape=(observation_space,), activation="relu"))
+        self.model.add(Dense(24, activation="relu"))
+        self.model.add(Dense(self.action_space, activation="linear"))
+        self.model.compile(loss="mse", optimizer=Adam(learning_rate=LEARNING_RATE))
+
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def act(self, state):
+        if np.random.rand() < self.exploration_rate:
+            return random.randrange(self.action_space)
+        q_values = self.model.predict(state, verbose=0)
+        return np.argmax(q_values[0])
+
+    def experience_replay(self):
+        if len(self.memory) < BATCH_SIZE:
+            return
+        batch = random.sample(self.memory, BATCH_SIZE)
+        for state, action, reward, state_next, terminal in batch:
+            q_update = reward
+            if not terminal:
+                q_update = (reward + GAMMA * np.amax(self.model.predict(state_next, verbose=0)[0]))
+            q_values = self.model.predict(state, verbose=0)
+            q_values[0][action] = q_update
+            self.model.fit(state, q_values, verbose=0)
+        self.exploration_rate *= EXPLORATION_DECAY
+        self.exploration_rate = max(EXPLORATION_MIN, self.exploration_rate)
 
 
-plt.plot([i for i in range(len(performance))], performance)
-plt.show()
+def cartpole():
+    env = gym.make(ENV_NAME)
+    observation_space = env.observation_space.shape[0]
+    action_space = env.action_space.n
+    dqn_solver = DQNSolver(observation_space, action_space)
+    run = 0
+    while True:
+        run += 1
+        state, info = env.reset()
+        state = np.reshape(state, [1, observation_space])
+        step = 0
+        while True:
+            step += 1
+            #env.render()
+            action = dqn_solver.act(state)
+            state_next, reward, terminal, run, info = env.step(action)
+            reward = reward if not terminal else -reward
+            state_next = np.reshape(state_next, [1, observation_space])
+            dqn_solver.remember(state, action, reward, state_next, terminal)
+            state = state_next
+            if terminal or run:
+                print ("Run: " + str(run) + ", exploration: " + str(dqn_solver.exploration_rate) + ", score: " + str(step))
+                break
+            dqn_solver.experience_replay()
 
-env.close()
 
+if __name__ == "__main__":
+    cartpole()
