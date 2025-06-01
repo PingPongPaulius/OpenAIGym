@@ -38,7 +38,7 @@ NUM_EPISODES = 1000
 FRAME_QUEUE_SIZE = 4
 Epsilon = 1.0
 Gamma = tf.constant(0.95, dtype=tf.float32)
-SAMPLE_SIZE = 32
+SAMPLE_SIZE = 20
 LR = 0.0001
 
 performance = []
@@ -68,12 +68,12 @@ for episode in range(NUM_EPISODES):
                 
                 s = tf.reshape(s, (1,4))
                 next_state = tf.reshape(next_state, (1,4))
-                y = reward + Gamma * np.max(Q.predict(next_state)) if cont else r
+                y = reward + Gamma * np.max(Q.predict(next_state, verbose=0)) if cont else r
                 q = Q.predict(s, verbose=0)
                 q[0][a] = y
                 Q.fit(s, q, epochs=1, verbose=0)
 
-    Epsilon *= 0.995
+        Epsilon *= 0.995
 
 
     performance.append(score)
