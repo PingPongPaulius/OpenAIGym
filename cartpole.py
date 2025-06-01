@@ -7,50 +7,38 @@ import random as rng
 import copy
 from collections import deque
 
-class Layer:
-
-    def __init__(self, inp_size, out_size, r=False):
-        self.weights = tf.Variable(np.random.rand(inp_size, out_size).astype(np.float32), dtype=tf.float32)
-        self.r_shape = r
+def DQN():
     
-    def feed_forward(self, x):
-        x = tf.cast(x, tf.float32)
-        if self.r_shape:
-            x = tf.reshape(x, (1,4))
-        matrix = tf.matmul(x, self.weights)
-        self.output = self.activation_function(matrix)
-        return self.output
+    model = tf.keras.Sequential()
+    model.add(tf.keras.layers.Dense(8, input_shape=(4,), activation='relu'))
+    model.add(tf.keras.layers.Dense(16, activation='relu'))
+    model.add(tf.keras.layers.Dense(2, activation='linear'))
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001), loss='mse')
 
-    def activation_function(self, matrix):
-        constant = tf.constant(1.0)
-        return constant / (constant + tf.math.exp(-matrix))
+    return model
 
 def state_to_tensor(states):
     return tf.convert_to_tensor(states, dtype=tf.float32)
 
-def get_action(state, Q, Epsilon):
+def get_action(state, DQN, Epsilon):
     if rng.random() < max(Epsilon, 0.01):
         return env.action_space.sample()
     else:
-        for layer in Q:
-            state = layer.feed_forward(state)
-        return tf.math.argmax(state, axis=1).numpy().item()
+        state = tf.reshape(state, (1,4))
+        output = DQN.predict(state, verbose=0)
+        return np.argmax(output)
 
 ##gym.register_envs(ale_py)
-env = gym.make("CartPole-v1", render_mode="human")
-#env = gym.make("CartPole-v1")
+#env = gym.make("CartPole-v1", render_mode="human")
+env = gym.make("CartPole-v1")
 
-i_layer = Layer(4, 32, True)
-h_layer = Layer(32, 2, False)
-o_layer = Layer(2, 2, False)
-
-D = deque(maxlen=100000)
-Q = [i_layer, h_layer, o_layer]
+D = deque(maxlen=10000000)
+Q = DQN()
 NUM_EPISODES = 1000
 FRAME_QUEUE_SIZE = 4
 Epsilon = 1.0
 Gamma = tf.constant(0.95, dtype=tf.float32)
-SAMPLE_SIZE = 16
+SAMPLE_SIZE = 32
 LR = 0.0001
 
 performance = []
@@ -72,51 +60,24 @@ for episode in range(NUM_EPISODES):
         D.append((curr_states, action, reward, state_to_tensor(state), running))
         score += 1
     
-    Epsilon *= 0.955
-        
-    if(len(D) >= SAMPLE_SIZE):
-        minibatch = rng.sample(list(D), SAMPLE_SIZE)
+        if(len(D) >= SAMPLE_SIZE):
+            minibatch = rng.sample(list(D), SAMPLE_SIZE)
 
-        i = 0
-        for state, action, reward, next_state, running in minibatch:
-            
-            mod = tf.constant(1.0) if running else tf.constant(0.0)
-            r = tf.constant(reward)
-
-            # TODO Handle MAX VALUES
-            weights = []
-            with tf.GradientTape(persistent=True) as tape:
-                for layer in Q:
-                    tape.watch(layer.weights)
+            for s, a, r, next_state, cont in minibatch:
                 
-                weights = []
-                state_q_values = state
-                next_q_values = next_state
-                tape.watch(state_q_values)
-                tape.watch(next_q_values)
-                for layer in Q:
-                    state_q_values = layer.feed_forward(state_q_values)
-                    weights.append(layer.weights)
-                for layer in Q:
-                    next_q_values = layer.feed_forward(next_q_values)
                 
-                Q_error = tf.reduce_max(next_q_values)
-                discounted_error = tf.multiply(Gamma, Q_error)
-                error = tf.multiply(discounted_error, mod)
-                y = tf.add(r, error)
-                q_pred = tf.reduce_sum(state_q_values * tf.one_hot(action, depth=2), axis=1)
-                loss = -tf.reduce_mean(tf.square(tf.subtract(y,q_pred)))
+                s = tf.reshape(s, (1,4))
+                next_state = tf.reshape(next_state, (1,4))
+                y = reward + Gamma * np.max(Q.predict(next_state)) if cont else r
+                q = Q.predict(s, verbose=0)
+                q[0][a] = y
+                Q.fit(s, q, epochs=1, verbose=0)
 
-                gradients = tape.gradient(loss, weights)
-
-                for index, l_w_a in enumerate(Q):
-                    Q[index].weights = tf.Variable(tf.add(Q[index].weights, gradients[index]*LR), dtype=tf.float32)
+    Epsilon *= 0.995
 
 
     performance.append(score)
-    if loss is None:
-        loss = 500000
-    print("Episode Fisnished", episode, " Reward", score, " Loss: ", loss)
+    print("Episode Fisnished", episode, " Reward", score)
 
 
 plt.plot([i for i in range(len(performance))], performance)
