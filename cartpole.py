@@ -10,8 +10,8 @@ from collections import deque
 def DQN():
     
     model = tf.keras.Sequential()
-    model.add(tf.keras.layers.Dense(24, input_shape=(4,), activation='relu'))
-    model.add(tf.keras.layers.Dense(24, activation='relu'))
+    model.add(tf.keras.layers.Dense(32, input_shape=(4,), activation='relu'))
+    model.add(tf.keras.layers.Dense(32, activation='relu'))
     model.add(tf.keras.layers.Dense(2, activation='linear'))
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001), loss='mse')
 
